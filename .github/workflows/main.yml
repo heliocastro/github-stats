@@ -4,8 +4,9 @@ on:
   push:
     branches: [ master ]
   schedule:
+    # Runs daily at 00:05 UTC. Adjust as you like.
     - cron: "5 0 * * *"
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -13,41 +14,48 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-    # Check out repository under $GITHUB_WORKSPACE, so the job can access it
-    - uses: actions/checkout@v3
+      # Check out repository under $GITHUB_WORKSPACE, so the job can access it
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true
 
-    # Run using Python 3.8 for consistency and aiohttp
-    - name: Set up Python 3.8
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.8'
-        architecture: 'x64'
-        cache: 'pip'
+      # Provision Python 3.13 via uv, with uv's dependency cache enabled
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: '3.13'
+          enable-cache: true
+          activate-environment: true
 
-    # Install dependencies with `pip`
-    - name: Install requirements
-      run: |
-        python3 -m pip install --upgrade pip setuptools wheel
-        python3 -m pip install -r requirements.txt
+      # Install dependencies with uv (system-wide, so `python3` picks them up)
+      - name: Install requirements
+        run: uv pip install -r requirements.txt
 
-    # Generate all statistics images
-    - name: Generate images
-      run: |
-        python3 --version
-        python3 generate_images.py
-      env:
-        ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        EXCLUDED: ${{ secrets.EXCLUDED }}
+      # Generate all statistics images (overview.svg, languages.svg)
+      - name: Generate images
+        run: |
+          python3 --version
+          python3 generate_images.py
+        env:
+          # Personal Access Token with read:user + repo scopes, covering
+          # your personal/non-CARIAD repos. CARIAD is excluded below, so
+          # SSO authorization against that org is not required.
+          ACCESS_TOKEN: ${{ secrets.STATS_GITHUB_HELIOCASTRO }}
+          GITHUB_TOKEN: ${{ secrets.STATS_GITHUB_HELIOCASTRO }}
+          # Comma-separated owner/repo entries or glob patterns to skip.
+          # CARIAD/* excludes every repo in the CARIAD enterprise org.
+          EXCLUDED: "cariad-digital-dev/*,cariad-pmt/*,CARiAD-T1/*, cariad-t2/*,cariad-ude/*,carsoftwareorg/*,cariad-optima/*,vwdfive/*"
+          # Comma-separated languages to drop from the breakdown, e.g. html,tex
+          EXCLUDED_LANGS: ${{ secrets.EXCLUDED_LANGS }}
+          EXCLUDE_FORKED_REPOS: true
 
-    # Commit all changed files to the repository
-    - name: Commit to the repo
-      run: |
-        git config --global user.name "jstrieb/github-stats"
-        git config --global user.email "github-stats[bot]@jstrieb.github.io"
-        git add .
-        # Force the build to succeed, even if no files were changed
-        git commit -m 'Update generated files' || true
-        git push
+      # Commit all changed files back to the repo
+      - name: Commit to the repo
+        run: |
+          git config --global user.name "github-stats[bot]"
+          git config --global user.email "github-stats[bot]@users.noreply.github.com"
+          git add .
+          # Force the build to succeed even if nothing changed
+          git commit -m 'Update generated stats images' || true
+          git push
