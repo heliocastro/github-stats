@@ -1,19 +1,19 @@
-#!/usr/bin/python3
-
 import asyncio
+import logging
 import os
-from typing import Dict, List, Optional, Set, Tuple, Any, cast
+from typing import Any
 
 import aiohttp
-import requests
+import httpx
 
+logger = logging.getLogger(__name__)
 
 ###############################################################################
 # Main Classes
 ###############################################################################
 
 
-class Queries(object):
+class Queries:
     """
     Class with functions to query the GitHub GraphQL (v4) API and the REST (v3)
     API. Also includes functions to dynamically generate GraphQL queries.
@@ -31,7 +31,7 @@ class Queries(object):
         self.session = session
         self.semaphore = asyncio.Semaphore(max_connections)
 
-    async def query(self, generated_query: str) -> Dict:
+    async def query(self, generated_query: str) -> dict:
         """
         Make a request to the GraphQL API using the authentication token from
         the environment
@@ -51,21 +51,27 @@ class Queries(object):
             result = await r_async.json()
             if result is not None:
                 return result
-        except:
-            print("aiohttp failed for GraphQL query")
-            # Fall back on non-async requests
-            async with self.semaphore:
-                r_requests = requests.post(
-                    "https://api.github.com/graphql",
-                    headers=headers,
-                    json={"query": generated_query},
+        except (aiohttp.ClientError, TimeoutError) as e:
+            logger.warning("aiohttp failed for GraphQL query: %s", e)
+            # Fall back on httpx
+            try:
+                async with self.semaphore, httpx.AsyncClient() as client:
+                    r_httpx = await client.post(
+                        "https://api.github.com/graphql",
+                        headers=headers,
+                        json={"query": generated_query},
+                    )
+                    r_httpx.raise_for_status()
+                    result = r_httpx.json()
+                    if result is not None:
+                        return result
+            except (httpx.HTTPError, ValueError) as fallback_error:
+                logger.error(
+                    "httpx fallback failed for GraphQL query: %s", fallback_error
                 )
-                result = r_requests.json()
-                if result is not None:
-                    return result
-        return dict()
+        return {}
 
-    async def query_rest(self, path: str, params: Optional[Dict] = None) -> Dict:
+    async def query_rest(self, path: str, params: dict | None = None) -> dict:
         """
         Make a request to the REST API
         :param path: API path to query
@@ -78,9 +84,8 @@ class Queries(object):
                 "Authorization": f"token {self.access_token}",
             }
             if params is None:
-                params = dict()
-            if path.startswith("/"):
-                path = path[1:]
+                params = {}
+            path = path.removeprefix("/")
             try:
                 async with self.semaphore:
                     r_async = await self.session.get(
@@ -89,36 +94,43 @@ class Queries(object):
                         params=tuple(params.items()),
                     )
                 if r_async.status == 202:
-                    # print(f"{path} returned 202. Retrying...")
-                    print(f"A path returned 202. Retrying...")
+                    logger.info("Path %s returned 202. Retrying...", path)
                     await asyncio.sleep(2)
                     continue
 
                 result = await r_async.json()
                 if result is not None:
                     return result
-            except:
-                print("aiohttp failed for rest query")
-                # Fall back on non-async requests
-                async with self.semaphore:
-                    r_requests = requests.get(
-                        f"https://api.github.com/{path}",
-                        headers=headers,
-                        params=tuple(params.items()),
+            except (aiohttp.ClientError, TimeoutError) as e:
+                logger.warning("aiohttp failed for REST query %s: %s", path, e)
+                # Fall back on httpx
+                try:
+                    async with self.semaphore, httpx.AsyncClient() as client:
+                        r_httpx = await client.get(
+                            f"https://api.github.com/{path}",
+                            headers=headers,
+                            params=params,
+                        )
+                        if r_httpx.status_code == 202:
+                            logger.info("Path %s returned 202. Retrying...", path)
+                            await asyncio.sleep(2)
+                            continue
+                        r_httpx.raise_for_status()
+                        return r_httpx.json()
+                except (httpx.HTTPError, ValueError) as fallback_error:
+                    logger.error(
+                        "httpx fallback failed for REST query %s: %s",
+                        path,
+                        fallback_error,
                     )
-                    if r_requests.status_code == 202:
-                        print(f"A path returned 202. Retrying...")
-                        await asyncio.sleep(2)
-                        continue
-                    elif r_requests.status_code == 200:
-                        return r_requests.json()
-        # print(f"There were too many 202s. Data for {path} will be incomplete.")
-        print("There were too many 202s. Data for this repository will be incomplete.")
-        return dict()
+        logger.error(
+            "There were too many 202s. Data for %s will be incomplete.", path
+        )
+        return {}
 
     @staticmethod
     def repos_overview(
-        contrib_cursor: Optional[str] = None, owned_cursor: Optional[str] = None
+        contrib_cursor: str | None = None, owned_cursor: str | None = None
     ) -> str:
         """
         :return: GraphQL query with overview of user repositories
@@ -134,7 +146,7 @@ class Queries(object):
             direction: DESC
         }},
         isFork: false,
-        after: {"null" if owned_cursor is None else '"'+ owned_cursor +'"'}
+        after: {"null" if owned_cursor is None else '"' + owned_cursor + '"'}
     ) {{
       pageInfo {{
         hasNextPage
@@ -170,7 +182,7 @@ class Queries(object):
             REPOSITORY,
             PULL_REQUEST_REVIEW
         ]
-        after: {"null" if contrib_cursor is None else '"'+ contrib_cursor +'"'}
+        after: {"null" if contrib_cursor is None else '"' + contrib_cursor + '"'}
     ) {{
       pageInfo {{
         hasNextPage
@@ -230,7 +242,7 @@ query {
 """
 
     @classmethod
-    def all_contribs(cls, years: List[str]) -> str:
+    def all_contribs(cls, years: list[str]) -> str:
         """
         :param years: list of years to get contributions for
         :return: query to retrieve contribution information for all user years
@@ -245,7 +257,7 @@ query {{
 """
 
 
-class Stats(object):
+class Stats:
     """
     Retrieve and store statistics about GitHub usage.
     """
@@ -255,8 +267,8 @@ class Stats(object):
         username: str,
         access_token: str,
         session: aiohttp.ClientSession,
-        exclude_repos: Optional[Set] = None,
-        exclude_langs: Optional[Set] = None,
+        exclude_repos: set | None = None,
+        exclude_langs: set | None = None,
         ignore_forked_repos: bool = False,
     ):
         self.username = username
@@ -265,15 +277,15 @@ class Stats(object):
         self._exclude_langs = set() if exclude_langs is None else exclude_langs
         self.queries = Queries(username, access_token, session)
 
-        self._name: Optional[str] = None
-        self._stargazers: Optional[int] = None
-        self._forks: Optional[int] = None
-        self._total_contributions: Optional[int] = None
-        self._languages: Optional[Dict[str, Any]] = None
-        self._owned_repos: Optional[Set[str]] = None
-        self._contrib_repos: Optional[Set[str]] = None
-        self._lines_changed: Optional[Tuple[int, int]] = None
-        self._views: Optional[int] = None
+        self._name: str | None = None
+        self._stargazers: int | None = None
+        self._forks: int | None = None
+        self._total_contributions: int | None = None
+        self._languages: dict[str, Any] | None = None
+        self._owned_repos: set[str] | None = None
+        self._contrib_repos: set[str] | None = None
+        self._lines_changed: tuple[int, int] | None = None
+        self._views: int | None = None
 
     async def to_str(self) -> str:
         """
@@ -288,7 +300,7 @@ class Stats(object):
 Stargazers: {await self.stargazers:,}
 Forks: {await self.forks:,}
 All-time contributions: {await self.total_contributions:,}
-Repositories with contributions: {len(await self.repos)}
+Repositories with contributions: {len((await self.owned_repos).union(await self.contrib_repos))}
 Lines of code added: {lines_changed[0]:,}
 Lines of code deleted: {lines_changed[1]:,}
 Lines of code changed: {lines_changed[0] + lines_changed[1]:,}
@@ -302,7 +314,7 @@ Languages:
         """
         self._stargazers = 0
         self._forks = 0
-        self._languages = dict()
+        self._languages = {}
         self._owned_repos = set()
         self._contrib_repos = set()
 
@@ -367,7 +379,11 @@ Languages:
                 if repo is None:
                     continue
                 name = repo.get("nameWithOwner")
-                if name in self._owned_repos or name in self._contrib_repos or name in self._exclude_repos:
+                if (
+                    name in self._owned_repos
+                    or name in self._contrib_repos
+                    or name in self._exclude_repos
+                ):
                     continue
                 self._contrib_repos.add(name)
 
@@ -401,7 +417,7 @@ Languages:
         # TODO: Improve languages to scale by number of contributions to
         #       specific filetypes
         langs_total = sum([v.get("size", 0) for v in self._languages.values()])
-        for k, v in self._languages.items():
+        for v in self._languages.values():
             v["prop"] = 100 * (v.get("size", 0) / langs_total)
 
     @property
@@ -438,7 +454,7 @@ Languages:
         return self._forks
 
     @property
-    async def languages(self) -> Dict:
+    async def languages(self) -> dict:
         """
         :return: summary of languages used by the user
         """
@@ -449,7 +465,7 @@ Languages:
         return self._languages
 
     @property
-    async def languages_proportional(self) -> Dict:
+    async def languages_proportional(self) -> dict:
         """
         :return: summary of languages used by the user, with proportional usage
         """
@@ -460,7 +476,7 @@ Languages:
         return {k: v.get("prop", 0) for (k, v) in self._languages.items()}
 
     @property
-    async def owned_repos(self) -> Set[str]:
+    async def owned_repos(self) -> set[str]:
         """
         :return: list of names of user's repos
         """
@@ -471,7 +487,7 @@ Languages:
         return self._owned_repos
 
     @property
-    async def contrib_repos(self) -> Set[str]:
+    async def contrib_repos(self) -> set[str]:
         """
         :return: list of names of user's repos
         """
@@ -513,7 +529,7 @@ Languages:
         return self._total_contributions
 
     @property
-    async def lines_changed(self) -> Tuple[int, int]:
+    async def lines_changed(self) -> tuple[int, int]:
         """
         :return: count of total lines added, removed, or modified by the user
         """
@@ -581,4 +597,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     asyncio.run(main())

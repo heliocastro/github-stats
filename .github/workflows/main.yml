@@ -15,10 +15,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # Check out repository under $GITHUB_WORKSPACE, so the job can access it
+      # Check out repository under $GITHUB_WORKSPACE, so the job can access it.
+      # Use the PAT (not the default GITHUB_TOKEN) so checkout persists
+      # credentials that are actually authorized to push back.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: true
+          token: ${{ secrets.STATS_GITHUB_HELIOCASTRO }}
 
       # Provision Python 3.13 via uv, with uv's dependency cache enabled
       - name: Set up uv
@@ -28,15 +31,33 @@ jobs:
           enable-cache: true
           activate-environment: true
 
-      # Install dependencies with uv (system-wide, so `python3` picks them up)
-      - name: Install requirements
-        run: uv pip install -r requirements.txt
+      # github_stats.py swallows GraphQL auth failures silently, falling
+      # back to "No Name" / all-zero stats with no error in the log. Call
+      # the same API directly first so a bad token fails loudly, here,
+      # with the real response body, instead of inside the Python step.
+      - name: Verify ACCESS_TOKEN against the GraphQL API
+        run: |
+          response=$(curl -s -w '\n%{http_code}' \
+            -H "Authorization: bearer ${ACCESS_TOKEN}" \
+            -X POST \
+            -d '{"query": "query { viewer { login name } }"}' \
+            https://api.github.com/graphql)
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+          echo "HTTP status: $http_code"
+          echo "Response body: $body"
+          if [ "$http_code" != "200" ] || echo "$body" | grep -q '"message"'; then
+            echo "::error::ACCESS_TOKEN failed authentication against the GraphQL API. See response body above."
+            exit 1
+          fi
+        env:
+          ACCESS_TOKEN: ${{ secrets.STATS_GITHUB_HELIOCASTRO }}
 
       # Generate all statistics images (overview.svg, languages.svg)
       - name: Generate images
         run: |
-          python3 --version
-          python3 generate_images.py
+          uv sync
+          uv run generate_images.py
         env:
           # Personal Access Token with read:user + repo scopes, covering
           # your personal/non-CARIAD repos. CARIAD is excluded below, so
@@ -45,16 +66,16 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.STATS_GITHUB_HELIOCASTRO }}
           # Comma-separated owner/repo entries or glob patterns to skip.
           # CARIAD/* excludes every repo in the CARIAD enterprise org.
-          EXCLUDED: "cariad-digital-dev/*,cariad-pmt/*,CARiAD-T1/*, cariad-t2/*,cariad-ude/*,carsoftwareorg/*,cariad-optima/*,vwdfive/*"
+          EXCLUDED: "cariad-digital-dev/*,cariad-pmt/*,CARiAD-T1/*,cariad-t2/*,cariad-ude/*,carsoftwareorg/*,cariad-optima/*,vwdfive/*, cariad-tech/*"
           # Comma-separated languages to drop from the breakdown, e.g. html,tex
-          EXCLUDED_LANGS: ${{ secrets.EXCLUDED_LANGS }}
-          EXCLUDE_FORKED_REPOS: true
+          EXCLUDED_LANGS: "Svelte,C++"
+          EXCLUDE_FORKED_REPOS: false
 
       # Commit all changed files back to the repo
       - name: Commit to the repo
         run: |
-          git config --global user.name "github-stats[bot]"
-          git config --global user.email "github-stats[bot]@users.noreply.github.com"
+          git config --global user.name "heliocastro"
+          git config --global user.email "dev@heliocastro.info"
           git add .
           # Force the build to succeed even if nothing changed
           git commit -m 'Update generated stats images' || true
