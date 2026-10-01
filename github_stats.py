@@ -123,9 +123,7 @@ class Queries:
                         path,
                         fallback_error,
                     )
-        logger.error(
-            "There were too many 202s. Data for %s will be incomplete.", path
-        )
+        logger.error("There were too many 202s. Data for %s will be incomplete.", path)
         return {}
 
     @staticmethod
@@ -145,7 +143,6 @@ class Queries:
             field: UPDATED_AT,
             direction: DESC
         }},
-        isFork: false,
         after: {"null" if owned_cursor is None else '"' + owned_cursor + '"'}
     ) {{
       pageInfo {{
@@ -158,6 +155,15 @@ class Queries:
           totalCount
         }}
         forkCount
+        defaultBranchRef {{
+          target {{
+            ... on Commit {{
+              history {{
+                totalCount
+              }}
+            }}
+          }}
+        }}
         languages(first: 10, orderBy: {{field: SIZE, direction: DESC}}) {{
           edges {{
             size
@@ -194,6 +200,15 @@ class Queries:
           totalCount
         }}
         forkCount
+        defaultBranchRef {{
+          target {{
+            ... on Commit {{
+              history {{
+                totalCount
+              }}
+            }}
+          }}
+        }}
         languages(first: 10, orderBy: {{field: SIZE, direction: DESC}}) {{
           edges {{
             size
@@ -239,6 +254,32 @@ query {
         totalContributions
       }}
     }}
+"""
+
+    @classmethod
+    def commits_by_repo(cls, years: list[str]) -> str:
+        """
+        :param years: list of years to get commit contributions for
+        :return: query for the user's commit counts per repository, per year
+        """
+        by_years = "\n".join(
+            f"""    year{y}: contributionsCollection(
+        from: "{y}-01-01T00:00:00Z",
+        to: "{int(y) + 1}-01-01T00:00:00Z"
+    ) {{
+      commitContributionsByRepository(maxRepositories: 100) {{
+        repository {{ nameWithOwner }}
+        contributions {{ totalCount }}
+      }}
+    }}"""
+            for y in years
+        )
+        return f"""
+query {{
+  viewer {{
+{by_years}
+  }}
+}}
 """
 
     @classmethod
@@ -308,6 +349,45 @@ Project page views: {await self.views:,}
 Languages:
   - {formatted_languages}"""
 
+    async def _my_commits(self) -> dict[str, int]:
+        """
+        :return: user's commit count per repository (nameWithOwner)
+        """
+        years = (
+            (await self.queries.query(Queries.contrib_years()))
+            .get("data", {})
+            .get("viewer", {})
+            .get("contributionsCollection", {})
+            .get("contributionYears", [])
+        )
+        by_year = (
+            (await self.queries.query(Queries.commits_by_repo(years)))
+            .get("data", {})
+            .get("viewer", {})
+            .values()
+        )
+        commits: dict[str, int] = {}
+        for year in by_year:
+            for c in year.get("commitContributionsByRepository", []):
+                name = c["repository"]["nameWithOwner"]
+                commits[name] = commits.get(name, 0) + c["contributions"]["totalCount"]
+        return commits
+
+    @staticmethod
+    def _weight(repo: dict, mine: dict[str, int], default: float) -> float:
+        """
+        :return: user's share of the repo's commits, scaling its language bytes
+        """
+        n = mine.get(repo.get("nameWithOwner"))
+        if n is None:
+            return default
+        total = (
+            ((repo.get("defaultBranchRef") or {}).get("target") or {})
+            .get("history", {})
+            .get("totalCount", 0)
+        )
+        return min(1.0, n / total) if total else 1.0
+
     async def get_stats(self) -> None:
         """
         Get lots of summary statistics using one big query. Sets many attributes
@@ -319,6 +399,7 @@ Languages:
         self._contrib_repos = set()
 
         exclude_langs_lower = {x.lower() for x in self._exclude_langs}
+        mine = await self._my_commits()
 
         next_owned = None
         next_contrib = None
@@ -360,17 +441,18 @@ Languages:
                 self._stargazers += repo.get("stargazers").get("totalCount", 0)
                 self._forks += repo.get("forkCount", 0)
 
+                weight = self._weight(repo, mine, 1.0)
                 for lang in repo.get("languages", {}).get("edges", []):
                     name = lang.get("node", {}).get("name", "Other")
                     languages = await self.languages
                     if name.lower() in exclude_langs_lower:
                         continue
                     if name in languages:
-                        languages[name]["size"] += lang.get("size", 0)
+                        languages[name]["size"] += lang.get("size", 0) * weight
                         languages[name]["occurrences"] += 1
                     else:
                         languages[name] = {
-                            "size": lang.get("size", 0),
+                            "size": lang.get("size", 0) * weight,
                             "occurrences": 1,
                             "color": lang.get("node", {}).get("color"),
                         }
@@ -387,17 +469,18 @@ Languages:
                     continue
                 self._contrib_repos.add(name)
 
+                weight = self._weight(repo, mine, 0.0)
                 for lang in repo.get("languages", {}).get("edges", []):
                     name = lang.get("node", {}).get("name", "Other")
                     languages = await self.languages
                     if name.lower() in exclude_langs_lower:
                         continue
                     if name in languages:
-                        languages[name]["size"] += lang.get("size", 0)
+                        languages[name]["size"] += lang.get("size", 0) * weight
                         languages[name]["occurrences"] += 1
                     else:
                         languages[name] = {
-                            "size": lang.get("size", 0),
+                            "size": lang.get("size", 0) * weight,
                             "occurrences": 1,
                             "color": lang.get("node", {}).get("color"),
                         }

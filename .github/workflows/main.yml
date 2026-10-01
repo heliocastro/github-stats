@@ -2,7 +2,7 @@ name: Generate Stats Images
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main ]
   schedule:
     # Runs daily at 00:05 UTC. Adjust as you like.
     - cron: "5 0 * * *"
@@ -68,7 +68,7 @@ jobs:
           # CARIAD/* excludes every repo in the CARIAD enterprise org.
           EXCLUDED: "cariad-digital-dev/*,cariad-pmt/*,CARiAD-T1/*,cariad-t2/*,cariad-ude/*,carsoftwareorg/*,cariad-optima/*,vwdfive/*, cariad-tech/*"
           # Comma-separated languages to drop from the breakdown, e.g. html,tex
-          EXCLUDED_LANGS: "Svelte,C++"
+          EXCLUDED_LANGS: "Svelte"
           EXCLUDE_FORKED_REPOS: false
 
       # Commit all changed files back to the repo
