@@ -138,7 +138,8 @@ class Queries:
     login,
     name,
     repositories(
-        first: 100,
+        first: 25,
+        isFork: false,
         orderBy: {{
             field: UPDATED_AT,
             direction: DESC
@@ -176,7 +177,7 @@ class Queries:
       }}
     }}
     repositoriesContributedTo(
-        first: 100,
+        first: 25,
         includeUserRepositories: false,
         orderBy: {{
             field: UPDATED_AT,

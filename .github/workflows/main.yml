@@ -68,7 +68,7 @@ jobs:
           # CARIAD/* excludes every repo in the CARIAD enterprise org.
           EXCLUDED: "cariad-digital-dev/*,cariad-pmt/*,CARiAD-T1/*,cariad-t2/*,cariad-ude/*,carsoftwareorg/*,cariad-optima/*,vwdfive/*, cariad-tech/*"
           # Comma-separated languages to drop from the breakdown, e.g. html,tex
-          EXCLUDED_LANGS: "Svelte"
+          EXCLUDED_LANGS: "Svelte,PHP,HTML,XSLT,PostScript"
           EXCLUDE_FORKED_REPOS: false
 
       # Commit all changed files back to the repo
