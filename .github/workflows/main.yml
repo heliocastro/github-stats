@@ -36,6 +36,9 @@ jobs:
       # the same API directly first so a bad token fails loudly, here,
       # with the real response body, instead of inside the Python step.
       - name: Verify ACCESS_TOKEN against the GraphQL API
+        env:
+          ACCESS_TOKEN: ${{ secrets.STATS_GITHUB_HELIOCASTRO }}
+          GITHUB_TOKEN: ${{ secrets.STATS_GITHUB_HELIOCASTRO }}
         run: |
           response=$(curl -s -w '\n%{http_code}' \
             -H "Authorization: bearer ${ACCESS_TOKEN}" \
@@ -50,8 +53,6 @@ jobs:
             echo "::error::ACCESS_TOKEN failed authentication against the GraphQL API. See response body above."
             exit 1
           fi
-        env:
-          ACCESS_TOKEN: ${{ secrets.STATS_GITHUB_HELIOCASTRO }}
 
       # Generate all statistics images (overview.svg, languages.svg)
       - name: Generate images
